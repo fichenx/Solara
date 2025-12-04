@@ -1,0 +1,79 @@
+name: 构建并推送 Solara Docker 镜像
+
+# 触发条件：推送到main分支、创建Release、手动触发
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:  # 忽略非核心文件变更，避免不必要的构建
+      - 'README.md'
+      - 'LICENSE'
+      - '.github/**'
+  release:
+    types: [ published ]
+  workflow_dispatch:  # 支持手动触发
+
+# 权限配置（GHCR 推送需要）
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 检出代码
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      # 2. 设置 QEMU（跨架构构建依赖）
+      - name: 设置 QEMU 模拟器
+        uses: docker/setup-qemu-action@v3
+
+      # 3. 初始化 Docker Buildx（支持多架构构建）
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 4. 登录 Docker Hub（可选：如果推送到 Docker Hub）
+      - name: 登录 Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 5. 登录 GitHub Container Registry（可选：如果推送到 GHCR）
+      - name: 登录 GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 6. 生成镜像标签（区分版本/分支）
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # 镜像名称：替换为你的 Docker Hub 用户名/GHCR 路径
+          images: |
+            ${{ secrets.DOCKER_USERNAME }}/solara
+            ghcr.io/${{ github.repository_owner }}/solara
+          # 标签规则：main分支=latest，Release=版本号，提交哈希=短哈希
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # 7. 构建并推送多架构镜像（amd64 + arm64/armv8）
+      - name: 构建并推送 Docker 镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64  # 支持armv8（arm64）
+          push: ${{ github.event_name != 'pull_request' }}  # PR不推送
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha  # 缓存加速构建
+          cache-to: type=gha,mode=max
